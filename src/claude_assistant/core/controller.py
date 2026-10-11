@@ -45,12 +45,14 @@ class Controller(QObject):
     claude_status = Signal(object)  # ClaudeStatus
     show_window = Signal()
     search_results = Signal(object)  # list[str]
+    voices_changed = Signal(bool)
 
     _voice_command = Signal(str)
     _local_done = Signal(object, str)  # ToolResult, source
     _brain_done = Signal(object, str)  # BrainResult, source
     _speech_state = Signal(bool)
     _wake = Signal(str)
+    _voices_ready = Signal(bool)
 
     def __init__(self, config: AppConfig, memory: MemoryStore, speaker: Speaker | None = None,
                  brain: ClaudeCodeBrain | None = None, monitor: HardwareMonitor | None = None,
@@ -78,6 +80,7 @@ class Controller(QObject):
         self._brain_done.connect(self._on_brain_done)
         self._speech_state.connect(self._on_speech_state)
         self._wake.connect(self._on_wake_main)
+        self._voices_ready.connect(self._on_voices_ready)
         self.speaker.on_start = lambda: self._speech_state.emit(True)
         self.speaker.on_end = lambda: self._speech_state.emit(False)
         self.speaker.configure(config.voice.tts_voice, config.voice.tts_rate, config.voice.tts_volume)
@@ -141,6 +144,54 @@ class Controller(QObject):
                 self.voice = self._make_voice()
                 self.voice.start()
         self.recheck_claude()
+
+    # ---- voices ----------------------------------------------------------
+    def download_voices(self) -> None:
+        """Fetch the neural voices that are not installed yet (background thread)."""
+        from claude_assistant.voice import piper_voices
+
+        if not piper_voices.piper_available():
+            self.message.emit("error", "Не установлена библиотека нейроголосов. Выполните в папке ассистента: "
+                                       ".venv\\Scripts\\python -m pip install piper-tts — и перезапустите ассистента.")
+            self.voices_changed.emit(False)
+            return
+
+        def job() -> None:
+            have = {v.id for v in piper_voices.installed()}
+            missing = [v for v in piper_voices.CATALOG if v.id not in have]
+            failed = []
+            for index, voice in enumerate(missing, start=1):
+                self.message.emit("system", f"Скачиваю голос {voice.label} ({index} из {len(missing)})…")
+                try:
+                    piper_voices.download(voice)
+                except Exception as exc:
+                    failed.append(f"{voice.label}: {exc}")
+            if failed:
+                self.message.emit("error", "Не удалось скачать: " + "; ".join(failed))
+            total = len(piper_voices.installed())
+            self.message.emit("system", f"Нейроголосов установлено: {total}. Выберите голос в настройках "
+                                        "или скажите «Клод, смени голос».")
+            self._voices_ready.emit(not failed)
+
+        self._pool.submit(job)
+
+    @Slot(bool)
+    def _on_voices_ready(self, ok: bool) -> None:
+        voice = self.config.voice
+        self.speaker.configure(voice.tts_voice, voice.tts_rate, voice.tts_volume)
+        self.voices_changed.emit(ok)
+
+    def next_voice(self) -> str | None:
+        """Switch to the next installed voice and remember the choice."""
+        voices = self.speaker.voices()
+        if not voices:
+            return None
+        current = self.config.voice.tts_voice
+        index = (voices.index(current) + 1) % len(voices) if current in voices else (1 % len(voices))
+        config = self.config.model_copy(deep=True)
+        config.voice.tts_voice = voices[index]
+        self.apply_config(config)
+        return voices[index]
 
     # ---- state -----------------------------------------------------------
     def _set_state(self, state: str, detail: str = "") -> None:
@@ -282,6 +333,14 @@ class Controller(QObject):
         if kind == "new_conversation":
             self.session_id = None
             return self._reply("Хорошо, начинаем новый разговор.", source)
+        if kind == "next_voice":
+            self.speaker.stop()
+            name = self.next_voice()
+            if name is None:
+                return self._reply("Других голосов нет. Скачайте нейроголоса в настройках.", source)
+            spoken = name.replace("Нейро: ", "")
+            self.voices_changed.emit(True)
+            return self._reply(f"Теперь я говорю так. Голос: {spoken}.", source)
         if kind == "mute":
             self.set_muted(True)
             return self._reply("Микрофон выключен. Включить его можно кнопкой или из меню в трее.", source)

@@ -102,9 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:
             controller.message.emit("error", f"Не удалось включить автозапуск: {exc}")
 
-    if sys.platform == "win32" and speaker.name == "Windows SAPI" and not speaker.has_russian_voice():  # type: ignore[attr-defined]
-        controller.message.emit("system", "Русский голос Windows не найден — ответы будут звучать с акцентом. "
-                                          "Установите его: Параметры → Время и язык → Речь → Добавить голоса → Русский.")
+    if not speaker.has_natural_russian_voice():
+        controller.message.emit("system", "Нет русского голоса для озвучки. Скачайте нейроголоса: «Настройки → Голос → "
+                                          "Скачать нейроголоса» (или установите русский голос Windows).")
 
     def shutdown() -> None:
         log.info("Shutting down")

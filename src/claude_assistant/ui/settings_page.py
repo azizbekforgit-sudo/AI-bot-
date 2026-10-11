@@ -190,9 +190,19 @@ class SettingsPage(QWidget):
         self.max_spoken.setRange(50, 5000)
         self.max_spoken.setSuffix(" символов")
         f.addRow("Максимум озвучки", self.max_spoken)
-        test = QPushButton("Проверить голос")
-        test.clicked.connect(lambda: self.c.speaker.speak("Привет! Я Клод, ваш ассистент."))
-        f.addRow(test)
+        row = QHBoxLayout()
+        test = QPushButton("Прослушать")
+        test.setToolTip("Произнести фразу выбранным голосом (без сохранения настроек)")
+        test.clicked.connect(self._preview_voice)
+        row.addWidget(test)
+        self.download_voices_btn = QPushButton("Скачать нейроголоса")
+        self.download_voices_btn.setToolTip("4 естественных русских голоса Piper (~60 МБ каждый), работают без интернета")
+        self.download_voices_btn.clicked.connect(self._download_voices)
+        row.addWidget(self.download_voices_btn)
+        row.addStretch(1)
+        f.addRow(row)
+        self.voices_hint = _label("")
+        f.addRow(self.voices_hint)
         root.addWidget(g)
 
         # --- system
@@ -242,6 +252,7 @@ class SettingsPage(QWidget):
         root.addStretch(1)
 
         self.c.claude_status.connect(self._on_claude_status)
+        self.c.voices_changed.connect(self.on_voices_downloaded)
         self.load()
 
     # ---- load / save
@@ -279,13 +290,7 @@ class SettingsPage(QWidget):
         self.clap_threshold.setValue(int(v.clap_threshold * 100))
         self.tts.setChecked(v.tts_enabled)
         self.speak_typed.setChecked(v.speak_typed_replies)
-        self.voice_name.clear()
-        self.voice_name.addItem("Автоматически (русский голос, если установлен)", "")
-        for name in self.c.speaker.voices():
-            self.voice_name.addItem(name, name)
-        if not self.c.speaker.voices():
-            self.voice_name.addItem(f"Движок озвучки: {self.c.speaker.name}", v.tts_voice)
-        self.voice_name.setCurrentIndex(max(0, self.voice_name.findData(v.tts_voice)))
+        self._fill_voices(v.tts_voice)
         self.rate.setValue(v.tts_rate)
         self.volume.setValue(v.tts_volume)
         self.max_spoken.setValue(v.max_spoken_chars)
@@ -369,6 +374,36 @@ class SettingsPage(QWidget):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self.saved.emit(config)
+
+    # ---- voices
+    def _fill_voices(self, selected: str) -> None:
+        self.voice_name.clear()
+        self.voice_name.addItem("Автоматически (лучший доступный русский голос)", "")
+        voices = self.c.speaker.voices()
+        for name in voices:
+            self.voice_name.addItem(name, name)
+        if selected and selected not in voices:
+            self.voice_name.addItem(f"{selected} (не установлен)", selected)
+        self.voice_name.setCurrentIndex(max(0, self.voice_name.findData(selected)))
+        neural = [n for n in voices if n.startswith("Нейро")]
+        self.voices_hint.setText(
+            f"Установлено нейроголосов: {len(neural)} из 4. Переключать голос можно и командой «Клод, смени голос»."
+            if neural else "Нейроголоса не установлены — нажмите «Скачать нейроголоса» (нужен интернет один раз).")
+
+    def _preview_voice(self) -> None:
+        self.c.speaker.stop()
+        self.c.speaker.configure(self.voice_name.currentData() or "", self.rate.value(), self.volume.value())
+        self.c.speaker.speak("Привет! Я Клод, ваш голосовой ассистент. Чем могу помочь?")
+
+    def _download_voices(self) -> None:
+        self.download_voices_btn.setEnabled(False)
+        self.download_voices_btn.setText("Скачиваю…")
+        self.c.download_voices()
+
+    def on_voices_downloaded(self, ok: bool) -> None:
+        self.download_voices_btn.setEnabled(True)
+        self.download_voices_btn.setText("Скачать нейроголоса")
+        self._fill_voices(self.voice_name.currentData() or self.c.config.voice.tts_voice)
 
     # ---- claude status
     def _browse_claude(self) -> None:

@@ -58,6 +58,17 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Модель не скачалась. Голосовое управление будет недоступно, текстовое — работает." -ForegroundColor Yellow
 }
 
+Step "Устанавливаю нейроголоса (естественная русская речь, без интернета после скачивания)"
+& $venvPy -m pip install "piper-tts>=1.3,<2"
+if ($LASTEXITCODE -eq 0) {
+    & $venvPy scripts\download_voices.py
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Голоса не скачались. Позже: Настройки -> Голос -> Скачать нейроголоса." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Библиотека нейроголосов не установилась. Будет использоваться голос Windows." -ForegroundColor Yellow
+}
+
 Step "Проверяю Claude Code"
 $claude = Get-Command claude -ErrorAction SilentlyContinue
 if ($claude) {
@@ -69,7 +80,7 @@ if ($claude) {
     Write-Host "затем откройте новый терминал, выполните 'claude' и войдите в аккаунт Claude Pro."
 }
 
-Step "Проверяю русский голос Windows"
+Step "Проверяю русский голос Windows (запасной вариант)"
 $voices = & $venvPy -c "import win32com.client as w; v=w.Dispatch('SAPI.SpVoice').GetVoices(); print(';'.join(v.Item(i).GetDescription() for i in range(v.Count)))" 2>$null
 if ($voices -match "Irina|Pavel|Russian") {
     Write-Host "Русский голос установлен."

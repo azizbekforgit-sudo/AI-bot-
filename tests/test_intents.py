@@ -60,3 +60,11 @@ def test_everything_else_goes_to_claude(text):
 def test_javascript_url_not_opened():
     intent = parse("открой сайт javascript:alert(1)", APPS, SITES)
     assert intent is None or not intent.args.get("url", "").startswith("javascript")
+
+
+@pytest.mark.parametrize("text", ["смени голос", "Клод поменяй голос", "поменяй свой голос на мужской", "другой голос"])
+def test_next_voice_intent(text):
+    from claude_assistant.voice.wake import WakeMatcher
+
+    intent = parse(WakeMatcher(["клод"]).strip(text), APPS, SITES)
+    assert intent is not None and intent.kind == "next_voice"

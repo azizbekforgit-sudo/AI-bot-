@@ -193,7 +193,7 @@ class EspeakSpeaker(Speaker):
             proc.terminate()
 
 
-def create_speaker() -> Speaker:
+def _system_speaker() -> Speaker:
     if sys.platform == "win32":
         try:
             speaker = SapiSpeaker()
@@ -206,3 +206,86 @@ def create_speaker() -> Speaker:
     if binary:
         return EspeakSpeaker(binary)
     return NullSpeaker()
+
+
+class MultiSpeaker:
+    """One voice list across engines (neural Piper voices + system voices); switches engine by voice."""
+
+    def __init__(self, backends: list[Speaker]) -> None:
+        self.backends = backends
+        self.active = backends[0]
+        self._on_start: Callable[[], None] = lambda: None
+        self._on_end: Callable[[], None] = lambda: None
+
+    @property
+    def on_start(self) -> Callable[[], None]:
+        return self._on_start
+
+    @on_start.setter
+    def on_start(self, callback: Callable[[], None]) -> None:
+        self._on_start = callback
+        for backend in self.backends:
+            backend.on_start = callback
+
+    @property
+    def on_end(self) -> Callable[[], None]:
+        return self._on_end
+
+    @on_end.setter
+    def on_end(self, callback: Callable[[], None]) -> None:
+        self._on_end = callback
+        for backend in self.backends:
+            backend.on_end = callback
+
+    @property
+    def name(self) -> str:
+        return self.active.name
+
+    @property
+    def speaking(self) -> bool:
+        return any(b.speaking for b in self.backends)
+
+    def voices(self) -> list[str]:
+        return [v for b in self.backends for v in b.voices()]
+
+    def configure(self, voice: str, rate: int, volume: int) -> None:
+        owner = next((b for b in self.backends if voice and voice in b.voices()), None)
+        if owner is None:  # default: the first engine that has any voice (neural voices come first)
+            owner = next((b for b in self.backends if b.voices()), self.backends[-1])
+            voice = ""
+        if owner is not self.active:
+            self.active.stop()
+        self.active = owner
+        owner.configure(voice, rate, volume)
+
+    def speak(self, text: str) -> None:
+        self.active.speak(text)
+
+    def stop(self) -> None:
+        for backend in self.backends:
+            backend.stop()
+
+    def shutdown(self) -> None:
+        for backend in self.backends:
+            backend.shutdown()
+
+    def has_natural_russian_voice(self) -> bool:
+        for backend in self.backends:
+            if backend.name.startswith("Piper") and backend.voices():
+                return True
+            if isinstance(backend, SapiSpeaker) and backend.has_russian_voice():
+                return True
+        return False
+
+
+def create_speaker() -> MultiSpeaker:
+    backends: list[Speaker] = []
+    try:
+        from claude_assistant.voice.piper_voices import PiperSpeaker, piper_available
+
+        if piper_available():
+            backends.append(PiperSpeaker())
+    except Exception as exc:
+        log.warning("Neural voices unavailable: %s", exc)
+    backends.append(_system_speaker())
+    return MultiSpeaker(backends)

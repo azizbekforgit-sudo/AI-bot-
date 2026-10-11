@@ -12,11 +12,22 @@ hidden = ["claude_assistant.ui.main_window", "pynvml"]
 if sys.platform == "win32":
     hidden += ["win32com.client", "pythoncom", "win32pdh", "winreg"]
 
+binaries = collect_dynamic_libs("vosk") + collect_dynamic_libs("sounddevice")
+datas = collect_data_files("vosk") + collect_data_files("_sounddevice_data")
+try:  # optional neural voices (piper-tts bundles espeak-ng data and needs onnxruntime)
+    import piper  # noqa: F401
+
+    binaries += collect_dynamic_libs("piper") + collect_dynamic_libs("onnxruntime")
+    datas += collect_data_files("piper")
+    hidden += ["piper", "onnxruntime"]
+except ImportError:
+    pass
+
 a = Analysis(
     [str(ROOT / "packaging" / "entry.py")],
     pathex=[str(ROOT / "src")],
-    binaries=collect_dynamic_libs("vosk") + collect_dynamic_libs("sounddevice"),
-    datas=collect_data_files("vosk") + collect_data_files("_sounddevice_data"),
+    binaries=binaries,
+    datas=datas,
     hiddenimports=hidden,
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
               "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtPdf", "PySide6.QtMultimedia"],

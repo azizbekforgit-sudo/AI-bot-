@@ -249,3 +249,19 @@ def test_single_instance_and_clean_shutdown(tmp_path):
     finally:
         first.terminate()
         first.wait(15)
+
+
+def test_change_voice_by_command(ctrl, qapp):
+    class Voices(FakeSpeaker):
+        def voices(self):
+            return ["Нейро: Дмитрий (мужской)", "Нейро: Ирина (женский)"]
+
+    ctrl.speaker.shutdown()
+    ctrl.speaker = Voices()
+    ctrl.speaker.on_start = lambda: None
+    ctrl.speaker.on_end = lambda: None
+    ctrl.submit("смени голос", source="voice")
+    assert wait_until(qapp, lambda: any("Теперь я говорю так" in t for _, t in ctrl.test.messages))
+    assert load_config().config.voice.tts_voice == "Нейро: Ирина (женский)"
+    ctrl.submit("смени голос", source="text")
+    assert wait_until(qapp, lambda: load_config().config.voice.tts_voice == "Нейро: Дмитрий (мужской)")
