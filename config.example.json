@@ -1,0 +1,76 @@
+{
+  "user_name": "",
+  "brain": {
+    "claude_path": "",
+    "model": "",
+    "autonomy": "balanced",
+    "workspaces": [
+      "C:\\Users\\ИМЯ\\Projects"
+    ],
+    "max_tool_calls": 40,
+    "timeout_s": 600,
+    "use_subscription": true,
+    "conversation_idle_reset_min": 30,
+    "extra_allowed_tools": []
+  },
+  "voice": {
+    "enabled": true,
+    "wake_word_enabled": true,
+    "wake_words": [
+      "клод"
+    ],
+    "wake_match_threshold": 0.75,
+    "input_device": "",
+    "model_path": "",
+    "command_timeout_s": 10.0,
+    "silence_timeout_s": 5.0,
+    "clap_enabled": false,
+    "clap_threshold": 0.35,
+    "tts_enabled": true,
+    "speak_typed_replies": false,
+    "tts_voice": "",
+    "tts_rate": 1,
+    "tts_volume": 90,
+    "max_spoken_chars": 400,
+    "activation_sound": true
+  },
+  "system": {
+    "autostart": false,
+    "start_minimized": true,
+    "theme": "dark",
+    "hotkey_talk": "ctrl+alt+space",
+    "hotkey_stop": "ctrl+alt+x",
+    "allow_screenshots": false,
+    "log_conversation": false,
+    "monitor_interval_s": 2.0,
+    "search_roots": [
+      "C:\\Users\\ИМЯ\\Documents",
+      "C:\\Users\\ИМЯ\\Desktop"
+    ]
+  },
+  "apps": {
+    "блокнот": "notepad.exe",
+    "калькулятор": "calc.exe",
+    "проводник": "explorer.exe",
+    "paint": "mspaint.exe",
+    "пэйнт": "mspaint.exe",
+    "диспетчер задач": "taskmgr.exe",
+    "терминал": "wt.exe",
+    "командную строку": "cmd.exe",
+    "vs code": "code",
+    "вс код": "code",
+    "визуал студио код": "code"
+  },
+  "sites": {
+    "ютуб": "https://www.youtube.com",
+    "youtube": "https://www.youtube.com",
+    "гугл": "https://www.google.com",
+    "google": "https://www.google.com",
+    "гитхаб": "https://github.com",
+    "github": "https://github.com",
+    "почту": "https://mail.google.com",
+    "переводчик": "https://translate.google.com",
+    "claude": "https://claude.ai",
+    "клод": "https://claude.ai"
+  }
+}
