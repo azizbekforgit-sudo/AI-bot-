@@ -46,8 +46,10 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
     & $pyExe @pyArgs -m venv .venv
 }
 $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
+Write-Host "Скачиваю и устанавливаю библиотеки (около 300 МБ, в основном Qt для интерфейса)."
+Write-Host "Это может занять 3-10 минут в зависимости от интернета. Не закрывайте окно."
 & $venvPy -m pip install --upgrade pip --quiet
-& $venvPy -m pip install -e . --quiet
+& $venvPy -m pip install -e .
 if ($LASTEXITCODE -ne 0) { Write-Host "Не удалось установить зависимости." -ForegroundColor Red; exit 1 }
 
 Step "Скачиваю модель распознавания русской речи"
