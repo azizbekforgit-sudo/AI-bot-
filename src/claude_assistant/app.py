@@ -26,7 +26,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    raw = sys.argv[1:] if argv is None else argv
+    if raw[:1] == ["--guard-hook"]:  # packaged .exe acting as Claude Code's PreToolUse hook
+        from claude_assistant.brain.guard import main as guard_main
+
+        return guard_main()
+    args = _parse_args(raw)
 
     from claude_assistant.integration.startup import StartupManager
     from claude_assistant.logging_setup import setup_logging

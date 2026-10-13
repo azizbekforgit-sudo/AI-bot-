@@ -258,6 +258,17 @@ class MultiSpeaker:
         self.active = owner
         owner.configure(voice, rate, volume)
 
+    def set_effect(self, jarvis: bool) -> None:
+        for backend in self.backends:
+            if hasattr(backend, "jarvis"):
+                backend.jarvis = jarvis
+
+    def add_backend(self, backend: Speaker) -> None:
+        """Insert an engine installed at runtime (neural voices go first)."""
+        backend.on_start = self._on_start
+        backend.on_end = self._on_end
+        self.backends.insert(0, backend)
+
     def speak(self, text: str) -> None:
         self.active.speak(text)
 

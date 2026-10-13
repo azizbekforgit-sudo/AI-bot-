@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +49,7 @@ class Controller(QObject):
     show_window = Signal()
     search_results = Signal(object)  # list[str]
     voices_changed = Signal(bool)
+    config_applied = Signal()
 
     _voice_command = Signal(str)
     _local_done = Signal(object, str)  # ToolResult, source
@@ -53,6 +57,7 @@ class Controller(QObject):
     _speech_state = Signal(bool)
     _wake = Signal(str)
     _voices_ready = Signal(bool)
+    _library_installed = Signal()
 
     def __init__(self, config: AppConfig, memory: MemoryStore, speaker: Speaker | None = None,
                  brain: ClaudeCodeBrain | None = None, monitor: HardwareMonitor | None = None,
@@ -62,6 +67,7 @@ class Controller(QObject):
         self.memory = memory
         self.speaker = speaker or NullSpeaker()
         self.brain = brain or ClaudeCodeBrain(config.brain.claude_path, config.brain.use_subscription)
+        self._auto_rounds = 0
         self._monitor = monitor
         self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="assistant")
         self._cancel = threading.Event()
@@ -81,9 +87,12 @@ class Controller(QObject):
         self._speech_state.connect(self._on_speech_state)
         self._wake.connect(self._on_wake_main)
         self._voices_ready.connect(self._on_voices_ready)
+        self._library_installed.connect(self._on_library_installed)
         self.speaker.on_start = lambda: self._speech_state.emit(True)
         self.speaker.on_end = lambda: self._speech_state.emit(False)
         self.speaker.configure(config.voice.tts_voice, config.voice.tts_rate, config.voice.tts_volume)
+        if hasattr(self.speaker, "set_effect"):
+            self.speaker.set_effect(config.voice.jarvis_effect)
 
         self.voice: VoiceService | None = None
         if enable_voice and config.voice.enabled:
@@ -94,10 +103,13 @@ class Controller(QObject):
         if self.voice:
             self.voice.start()
         self._pool.submit(self._check_claude)
+        self._ensure_default_voice()
 
     def shutdown(self) -> None:
         self._cancel.set()
         self.brain.cancel()
+        if hasattr(self.brain, "close"):
+            self.brain.close()
         self.speaker.shutdown()
         if self.voice:
             self.voice.stop()
@@ -120,8 +132,18 @@ class Controller(QObject):
         self.claude_status.emit(status)
         if not status.available:
             self._set_state(OFFLINE, status.message)
-        elif self.state == OFFLINE:
+            return
+        if self.state == OFFLINE:
             self._set_state(IDLE)
+        self._prewarm()
+
+    def _prewarm(self) -> None:
+        """Start Claude Code in the background so the next new conversation answers faster."""
+        if self.session_id is None and not self._busy and hasattr(self.brain, "prewarm"):
+            try:
+                self.brain.prewarm(self._request(""))
+            except Exception:
+                log.exception("Prewarm failed")
 
     def recheck_claude(self) -> None:
         self.brain.claude_path = self.config.brain.claude_path
@@ -133,6 +155,8 @@ class Controller(QObject):
         self.config = config
         save_config(config)
         self.speaker.configure(config.voice.tts_voice, config.voice.tts_rate, config.voice.tts_volume)
+        if hasattr(self.speaker, "set_effect"):
+            self.speaker.set_effect(config.voice.jarvis_effect)
         if voice_changed:
             if self.voice and not config.voice.enabled:
                 self.voice.stop()
@@ -144,21 +168,55 @@ class Controller(QObject):
                 self.voice = self._make_voice()
                 self.voice.start()
         self.recheck_claude()
+        self.config_applied.emit()
 
     # ---- voices ----------------------------------------------------------
-    def download_voices(self) -> None:
-        """Fetch the neural voices that are not installed yet (background thread)."""
+    def _ensure_default_voice(self) -> None:
+        """First run with the neural-voice library but no voices: fetch the default voice once."""
+        if not hasattr(self.speaker, "add_backend"):
+            return  # only the real multi-engine speaker manages neural voices
+        try:
+            from claude_assistant.voice import piper_voices
+
+            if piper_voices.piper_available() and not piper_voices.installed():
+                self.download_voices(only_default=True)
+        except Exception:
+            log.exception("Default voice check failed")
+
+    def download_voices(self, only_default: bool = False) -> None:
+        """Fetch neural voices (and, when asked from Settings, the library itself) in the background."""
         from claude_assistant.voice import piper_voices
 
-        if not piper_voices.piper_available():
-            self.message.emit("error", "Не установлена библиотека нейроголосов. Выполните в папке ассистента: "
-                                       ".venv\\Scripts\\python -m pip install piper-tts — и перезапустите ассистента.")
-            self.voices_changed.emit(False)
-            return
+        def install_library() -> bool:
+            if getattr(sys, "frozen", False):
+                self.message.emit("error", "В этой сборке нет библиотеки нейроголосов.")
+                return False
+            python = Path(sys.executable)
+            if python.name.lower() == "pythonw.exe":
+                python = python.with_name("python.exe")
+            self.message.emit("system", "Устанавливаю библиотеку нейроголосов (piper-tts, ~30 МБ)…")
+            try:
+                done = subprocess.run([str(python), "-m", "pip", "install", "piper-tts>=1.3,<2"],
+                                      capture_output=True, text=True, timeout=900,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self.message.emit("error", f"Не удалось установить piper-tts: {exc}")
+                return False
+            if done.returncode != 0:
+                self.message.emit("error", "Не удалось установить piper-tts: " + (done.stderr or done.stdout)[-300:])
+                return False
+            importlib.invalidate_caches()
+            return piper_voices.piper_available()
 
         def job() -> None:
+            if not piper_voices.piper_available():
+                if not install_library():
+                    self._voices_ready.emit(False)
+                    return
+                self._library_installed.emit()
             have = {v.id for v in piper_voices.installed()}
-            missing = [v for v in piper_voices.CATALOG if v.id not in have]
+            wanted = piper_voices.CATALOG[:1] if only_default else piper_voices.CATALOG
+            missing = [v for v in wanted if v.id not in have]
             failed = []
             for index, voice in enumerate(missing, start=1):
                 self.message.emit("system", f"Скачиваю голос {voice.label} ({index} из {len(missing)})…")
@@ -174,6 +232,15 @@ class Controller(QObject):
             self._voices_ready.emit(not failed)
 
         self._pool.submit(job)
+
+    @Slot()
+    def _on_library_installed(self) -> None:
+        from claude_assistant.voice.piper_voices import PiperSpeaker
+
+        if hasattr(self.speaker, "add_backend") and not any(
+                isinstance(b, PiperSpeaker) for b in getattr(self.speaker, "backends", [])):
+            self.speaker.add_backend(PiperSpeaker())
+            self.speaker.set_effect(self.config.voice.jarvis_effect)
 
     @Slot(bool)
     def _on_voices_ready(self, ok: bool) -> None:
@@ -286,7 +353,29 @@ class Controller(QObject):
 
     def new_conversation(self) -> None:
         self.session_id = None
+        if hasattr(self.brain, "close"):
+            self.brain.close()
+        self._pool.submit(self._prewarm)
         self.message.emit("system", "Начат новый разговор.")
+
+    @property
+    def full_access(self) -> bool:
+        return self.config.brain.autonomy == "full"
+
+    def set_full_access(self, enabled: bool) -> None:
+        """"Разрешать всё": Claude acts without asking; the guard hook still blocks the forbidden list."""
+        if enabled == self.full_access:
+            return
+        config = self.config.model_copy(deep=True)
+        if enabled:
+            self._previous_autonomy = config.brain.autonomy
+            config.brain.autonomy = "full"
+        else:
+            config.brain.autonomy = getattr(self, "_previous_autonomy", "balanced")
+        self.apply_config(config)
+        self.message.emit("system", "Режим «Разрешать всё» включён: я выполняю действия без вопросов. "
+                                    "Опасные действия (антивирус, админ-права, системные файлы) всё равно запрещены."
+                          if enabled else "Режим «Разрешать всё» выключен: снова спрашиваю разрешение.")
 
     # ---- input -----------------------------------------------------------------
     def submit(self, text: str, source: str = "text") -> None:
@@ -294,6 +383,7 @@ class Controller(QObject):
         if not text:
             return
         self.message.emit("user", text)
+        self._auto_rounds = 0
         if self.config.system.log_conversation:
             log.info("User (%s): %s", source, text)
         else:
@@ -462,19 +552,9 @@ class Controller(QObject):
         idle_limit = self.config.brain.conversation_idle_reset_min * 60
         if self.session_id and time.monotonic() - self._last_activity > idle_limit:
             self.session_id = None
-        cfg = self.config.brain
-        request = BrainRequest(
-            text=text,
-            autonomy=autonomy or cfg.autonomy,
-            workspaces=effective_workspaces(self.config),
-            resume_session=self.session_id if resume else None,
-            extra_rules=list(cfg.extra_allowed_tools) + list(extra_rules or []),
-            memory_context=self.memory.as_prompt_context(),
-            user_name=self.config.user_name,
-            model=cfg.model,
-            max_tool_calls=cfg.max_tool_calls,
-            timeout_s=cfg.timeout_s,
-        )
+        request = self._request(text, extra_rules, autonomy)
+        if not resume:
+            request.resume_session = None
         self._busy = True
         self._cancel = threading.Event()
         cancel = self._cancel
@@ -493,6 +573,23 @@ class Controller(QObject):
             self._brain_done.emit(result, source)
 
         self._pool.submit(job)
+
+    def _request(self, text: str, extra_rules: list[str] | None = None, autonomy: str | None = None) -> BrainRequest:
+        cfg = self.config.brain
+        return BrainRequest(
+            text=text,
+            autonomy=autonomy or cfg.autonomy,
+            workspaces=effective_workspaces(self.config),
+            resume_session=self.session_id,
+            extra_rules=list(cfg.extra_allowed_tools) + list(extra_rules or []),
+            memory_context=self.memory.as_prompt_context(),
+            user_name=self.config.user_name,
+            model=cfg.model,
+            effort=cfg.effort,
+            lean=cfg.lean_mode,
+            max_tool_calls=cfg.max_tool_calls,
+            timeout_s=cfg.timeout_s,
+        )
 
     def cancel_task(self) -> None:
         self._cancel.set()
@@ -525,6 +622,13 @@ class Controller(QObject):
         forbidden = [d for d in result.denials if not d.approvable]
         for denial in forbidden:
             self.message.emit("error", f"Заблокировано: {denial.summary}\n{denial.reason}")
+        if approvable and self.full_access and self._auto_rounds < 2 and not self._stopped:
+            self._auto_rounds += 1
+            self._pending = (approvable, source)
+            self.message.emit("system", "Разрешаю автоматически: " + "; ".join(d.summary.splitlines()[0]
+                                                                            for d in approvable))
+            self.approve_pending()
+            return
         if approvable:
             self._pending = (approvable, source)
             self.approval_needed.emit(approvable)

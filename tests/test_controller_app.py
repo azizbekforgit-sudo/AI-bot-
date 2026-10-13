@@ -265,3 +265,35 @@ def test_change_voice_by_command(ctrl, qapp):
     assert load_config().config.voice.tts_voice == "Нейро: Ирина (женский)"
     ctrl.submit("смени голос", source="text")
     assert wait_until(qapp, lambda: load_config().config.voice.tts_voice == "Нейро: Дмитрий (мужской)")
+
+
+def test_full_access_toggle_and_auto_approve(ctrl, qapp, tmp_path):
+    ctrl.set_full_access(True)
+    assert load_config().config.brain.autonomy == "full"
+    denial = review_denial("Bash", {"command": "pip install requests"}, [tmp_path])
+    ctrl.test.brain.results += [BrainResult(True, text="", session_id="s1", denials=[denial]),
+                                BrainResult(True, text="Установил.", session_id="s1")]
+    ctrl.submit("поставь requests", source="text")
+    assert wait_until(qapp, lambda: ("assistant", "Установил.") in ctrl.test.messages)
+    assert any("Разрешаю автоматически" in t for _, t in ctrl.test.messages)
+    assert ctrl.test.approvals == [] or not any(ctrl.test.approvals)  # no approval banner was needed
+    assert "Bash(pip install requests)" in ctrl.test.brain.requests[1].extra_rules
+    assert ctrl.test.brain.requests[0].autonomy == "full"
+    ctrl.set_full_access(False)
+    assert load_config().config.brain.autonomy == "balanced"
+
+
+def test_auto_approve_is_bounded(ctrl, qapp, tmp_path):
+    ctrl.set_full_access(True)
+    denial = review_denial("Bash", {"command": "pip install x"}, [tmp_path])
+    ctrl.test.brain.results += [BrainResult(True, text="", session_id="s1", denials=[denial]) for _ in range(4)]
+    ctrl.submit("сделай", source="text")
+    assert wait_until(qapp, lambda: ctrl.test.approvals and ctrl.test.approvals[-1], timeout=10)
+    assert len(ctrl.test.brain.requests) == 3  # original + 2 automatic retries, then it asks the user
+
+
+def test_brain_request_carries_speed_settings(ctrl, qapp):
+    ctrl.submit("что-нибудь", source="text")
+    assert wait_until(qapp, lambda: ctrl.test.brain.requests)
+    request = ctrl.test.brain.requests[0]
+    assert request.model == "opus" and request.effort == "low" and request.lean is True

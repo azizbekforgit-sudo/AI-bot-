@@ -53,6 +53,10 @@ ADVANCED = BALANCED + [
     )
 ]
 
+# "Разрешать всё": every tool is allowed. Safety then rests on HARD_DENY_RULES plus the
+# PreToolUse guard hook (brain/guard.py), which runs before every command and file edit.
+FULL = ADVANCED + ["Bash", "PowerShell", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch"]
+
 # Passed as --disallowedTools so that even a broad allow rule cannot reach them.
 HARD_DENY_RULES = [
     f"{shell}({cmd})"
@@ -134,6 +138,8 @@ def rules_for(autonomy: str, extra_rules: list[str] | None = None) -> tuple[str,
         mode, rules = "plan", list(READ_ONLY)
     elif autonomy == "advanced":
         mode, rules = "acceptEdits", list(ADVANCED)
+    elif autonomy == "full":
+        mode, rules = "acceptEdits", list(FULL)
     else:
         mode, rules = "acceptEdits", list(BALANCED)
     for rule in extra_rules or []:

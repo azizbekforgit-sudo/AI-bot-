@@ -146,3 +146,94 @@ def test_offline_gives_up_after_retries(fake_claude, tmp_path, monkeypatch):
     assert "интернет" in result.error_message
     assert sum(e.kind == "status" for e in events) == 4
     assert time.monotonic() - started < 10
+
+
+# ---- persistent process, speed flags, guard ------------------------------------------------
+
+def _rec(record):
+    return json.loads(record.read_text(encoding="utf-8"))
+
+
+def test_process_is_reused_between_turns(fake_claude, tmp_path, monkeypatch):
+    record = tmp_path / "rec.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    brain = ClaudeCodeBrain(str(fake_claude))
+    first, _ = _run(brain, _request(tmp_path))
+    pid = _rec(record)["pid"]
+    second, _ = _run(brain, _request(tmp_path, resume_session=first.session_id, text="ещё"))
+    rec = _rec(record)
+    assert second.ok and rec["pid"] == pid and rec["turn"] == 2
+    assert rec["prompt"] == "ещё"  # no preamble on follow-ups
+    brain.close()
+
+
+def test_new_conversation_and_rule_change_restart(fake_claude, tmp_path, monkeypatch):
+    record = tmp_path / "rec.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    brain = ClaudeCodeBrain(str(fake_claude))
+    first, _ = _run(brain, _request(tmp_path))
+    pid = _rec(record)["pid"]
+    _run(brain, _request(tmp_path, resume_session=first.session_id, extra_rules=["Bash(npm install x)"]))
+    rec = _rec(record)
+    assert rec["pid"] != pid  # new permissions → new process…
+    assert rec["argv"][rec["argv"].index("--resume") + 1] == first.session_id  # …same conversation
+    _run(brain, _request(tmp_path))  # resume_session=None → fresh conversation
+    assert "--resume" not in _rec(record)["argv"]
+    brain.close()
+
+
+def test_prewarm_is_used_by_first_command(fake_claude, tmp_path, monkeypatch):
+    record = tmp_path / "rec.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    brain = ClaudeCodeBrain(str(fake_claude))
+    brain.prewarm(_request(tmp_path, text=""))
+    warm_pid = brain._live.proc.pid
+    result, _ = _run(brain, _request(tmp_path))
+    assert result.ok and _rec(record)["pid"] == warm_pid
+    brain.close()
+    assert brain._live is None
+
+
+def test_cancel_kills_process_and_next_run_recovers(fake_claude, tmp_path, monkeypatch):
+    record = tmp_path / "rec.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    brain = ClaudeCodeBrain(str(fake_claude))
+    first, _ = _run(brain, _request(tmp_path))
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "hang")
+    brain.close()  # the env change only reaches a new process
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    hung, _ = _run(brain, _request(tmp_path, resume_session=first.session_id), cancel)
+    assert hung.error_kind == "cancelled" and brain._live is None
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "success")
+    again, _ = _run(brain, _request(tmp_path, resume_session=first.session_id))
+    assert again.ok
+    brain.close()
+
+
+def test_speed_and_safety_flags(fake_claude, tmp_path, monkeypatch):
+    record = tmp_path / "rec.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    brain = ClaudeCodeBrain(str(fake_claude))
+    _run(brain, _request(tmp_path, model="opus", effort="low", lean=True))
+    rec = _rec(record)
+    argv = rec["argv"]
+    assert argv[argv.index("--effort") + 1] == "low"
+    assert argv[argv.index("--model") + 1] == "opus" and argv[argv.index("--fallback-model") + 1] == "sonnet"
+    assert "--strict-mcp-config" in argv and "Bash" in argv[argv.index("--tools") + 1]
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text(encoding="utf-8"))
+    hook = settings["hooks"]["PreToolUse"][0]
+    assert "Bash" in hook["matcher"] and "claude_assistant.brain.guard" in hook["hooks"][0]["command"]
+    assert rec["workspaces_env"] == str(tmp_path / "ws")
+    brain.close()
+
+
+def test_lean_off_keeps_users_tools(fake_claude, tmp_path, monkeypatch):
+    record = tmp_path / "rec.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    brain = ClaudeCodeBrain(str(fake_claude))
+    _run(brain, _request(tmp_path, lean=False, model="sonnet"))
+    argv = _rec(record)["argv"]
+    assert "--tools" not in argv and "--strict-mcp-config" not in argv and "--fallback-model" not in argv
+    brain.close()

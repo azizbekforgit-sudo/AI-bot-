@@ -38,9 +38,16 @@ class AssistantPage(QWidget):
 
         # --- header: state + controls
         header = QFrame(objectName="Card")
-        h = QHBoxLayout(header)
-        h.setContentsMargins(16, 12, 16, 12)
+        rows = QVBoxLayout(header)
+        rows.setContentsMargins(16, 12, 16, 12)
+        rows.setSpacing(10)
+        h = QHBoxLayout()
         h.setSpacing(14)
+        rows.addLayout(h)
+        controls = QHBoxLayout()  # second row so the header fits narrow windows and high DPI scaling
+        controls.setSpacing(8)
+        controls.addStretch(1)
+        rows.addLayout(controls)
         self.orb = StatusOrb()
         h.addWidget(self.orb)
         titles = QVBoxLayout()
@@ -57,15 +64,22 @@ class AssistantPage(QWidget):
         self.mute_btn = QPushButton("Выключить микрофон")
         self.mute_btn.setCheckable(True)
         self.mute_btn.toggled.connect(self._toggle_mute)
-        h.addWidget(self.mute_btn)
+        controls.addWidget(self.mute_btn)
+        self.full_btn = QPushButton("Разрешать всё")
+        self.full_btn.setCheckable(True)
+        self.full_btn.setChecked(self.c.full_access)
+        self.full_btn.setToolTip("Выполнять действия без вопросов. Опасное (антивирус, админ-права, системные файлы, "
+                                 "пароли) всё равно заблокировано.")
+        self.full_btn.toggled.connect(self._toggle_full)
+        controls.addWidget(self.full_btn)
         self.hush_btn = QPushButton("Замолчать")
         self.hush_btn.setToolTip("Остановить озвучку (Esc)")
         self.hush_btn.clicked.connect(self.c.stop_speaking)
-        h.addWidget(self.hush_btn)
+        controls.addWidget(self.hush_btn)
         self.stop_btn = QPushButton("СТОП", objectName="Danger")
         self.stop_btn.setToolTip("Экстренная остановка: отменить все задачи и запретить новые действия")
         self.stop_btn.clicked.connect(self._stop_or_resume)
-        h.addWidget(self.stop_btn)
+        controls.addWidget(self.stop_btn)
         root.addWidget(header)
 
         # --- approval banner
@@ -141,6 +155,7 @@ class AssistantPage(QWidget):
         c.approval_needed.connect(self._approval)
         c.voice_status.connect(self.on_voice_status)
         c.search_results.connect(self._results)
+        c.config_applied.connect(self.sync_full_access)
         self.on_state(c.state, c.detail)
         if c.voice is None:
             self.on_voice_status("muted", "Голос выключен в настройках")
@@ -275,6 +290,21 @@ class AssistantPage(QWidget):
     def _toggle_mute(self, muted: bool) -> None:
         self.mute_btn.setText("Включить микрофон" if muted else "Выключить микрофон")
         self.c.set_muted(muted)
+
+    def _toggle_full(self, enabled: bool) -> None:
+        from claude_assistant.ui.settings_page import confirm_full_access
+
+        if enabled and not self.c.full_access and not confirm_full_access(self):
+            self.full_btn.blockSignals(True)
+            self.full_btn.setChecked(False)
+            self.full_btn.blockSignals(False)
+            return
+        self.c.set_full_access(enabled)
+
+    def sync_full_access(self) -> None:
+        self.full_btn.blockSignals(True)
+        self.full_btn.setChecked(self.c.full_access)
+        self.full_btn.blockSignals(False)
 
     def _stop_or_resume(self) -> None:
         if self.c.stopped:

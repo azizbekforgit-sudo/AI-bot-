@@ -112,6 +112,33 @@ def download(voice: VoiceInfo, directory: Path | None = None,
     raise RuntimeError("; ".join(errors))
 
 
+# ---- "JARVIS" voice effect ----------------------------------------------------------------
+
+JARVIS_PITCH = 0.9  # 10 % lower voice; speech is synthesised 10 % faster so the tempo stays the same
+_REFLECTIONS = ((0.019, 0.20), (0.037, 0.12), (0.061, 0.07))  # small hard room: delay (s), gain
+
+
+def jarvis_effect(samples, sample_rate: int):
+    """Deeper, slightly roomy "AI butler" timbre. int16 in, int16 out."""
+    import numpy as np
+
+    x = samples.astype(np.float32) / 32768.0
+    if len(x) < 2:
+        return samples
+    # Pitch down by resampling (the synthesis was sped up by the same factor).
+    n = int(len(x) / JARVIS_PITCH)
+    x = np.interp(np.linspace(0, len(x) - 1, n), np.arange(len(x)), x).astype(np.float32)
+    y = x.copy()
+    for delay_s, gain in _REFLECTIONS:
+        d = int(sample_rate * delay_s)
+        if 0 < d < len(x):
+            y[d:] += gain * x[:-d]
+    peak = float(np.abs(y).max())
+    if peak > 0.98:
+        y *= 0.98 / peak
+    return (y * 32767).astype(np.int16)
+
+
 # ---- playback --------------------------------------------------------------------------
 
 class Player(Protocol):
@@ -144,6 +171,7 @@ class PiperSpeaker(Speaker):
         self._loaded: tuple[str, object] | None = None
         self._length_scale = 1.0
         self._volume = 0.9
+        self.jarvis = True
         super().__init__()
 
     def voices(self) -> list[str]:
@@ -173,11 +201,16 @@ class PiperSpeaker(Speaker):
         voice = self._loaded[1]
         from piper import SynthesisConfig
 
-        config = SynthesisConfig(length_scale=self._length_scale, volume=self._volume)
+        jarvis = self.jarvis
+        length = self._length_scale * (JARVIS_PITCH if jarvis else 1.0)
+        config = SynthesisConfig(length_scale=length, volume=self._volume)
         for chunk in voice.synthesize(text, config):  # one chunk per sentence
             if self._stop.is_set():
                 return
-            self.player.play(chunk.audio_int16_array, chunk.sample_rate, self._stop)
+            audio = chunk.audio_int16_array
+            if jarvis:
+                audio = jarvis_effect(audio, chunk.sample_rate)
+            self.player.play(audio, chunk.sample_rate, self._stop)
 
 
 def _load_piper_voice(path: Path):

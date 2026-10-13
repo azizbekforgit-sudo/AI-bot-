@@ -20,6 +20,23 @@ AUTONOMY = [
                                      "остальное — с вашего разрешения."),
     ("advanced", "Расширенный", "Дополнительно запускает python/node-скрипты, git commit и сборку. Удаление, "
                                "установка программ и сеть всё равно только с разрешения."),
+    ("full", "Разрешать всё", "Выполняет любые команды без вопросов. Страж всё равно блокирует опасное: отключение "
+                             "антивируса и брандмауэра, админ-права, системный реестр, пароли и ключи, удаление диска."),
+]
+
+MODELS = [
+    ("opus", "Opus 5.5 — самый умный"),
+    ("sonnet", "Sonnet — быстрее, экономнее"),
+    ("haiku", "Haiku — самый быстрый и дешёвый"),
+    ("", "По умолчанию для подписки"),
+]
+
+EFFORTS = [
+    ("low", "Низкий — быстрые ответы, меньше токенов (рекомендуется)"),
+    ("medium", "Средний"),
+    ("high", "Высокий — думает дольше"),
+    ("xhigh", "Очень высокий"),
+    ("max", "Максимальный — медленно и затратно"),
 ]
 
 
@@ -27,6 +44,16 @@ def _label(text: str) -> QLabel:
     label = QLabel(text, objectName="Muted")
     label.setWordWrap(True)
     return label
+
+
+def confirm_full_access(parent: QWidget) -> bool:
+    answer = QMessageBox.question(
+        parent, "Разрешать всё",
+        "Claude будет выполнять любые команды и менять файлы без вопросов.\n\n"
+        "Всегда запрещено (даже в этом режиме): отключение антивируса и брандмауэра, права администратора, "
+        "системный реестр, чтение паролей и ключей, форматирование и удаление диска.\n\n"
+        "Остановить всё можно кнопкой «СТОП» или Ctrl+Alt+X. Включить?")
+    return answer == QMessageBox.StandardButton.Yes
 
 
 class PathList(QWidget):
@@ -112,9 +139,20 @@ class SettingsPage(QWidget):
         row.addWidget(browse)
         row.addWidget(check)
         f.addRow("Путь к claude", row)
-        self.model = QLineEdit()
-        self.model.setPlaceholderText("По умолчанию для вашей подписки (например: sonnet, opus)")
+        self.model = QComboBox()
+        self.model.setEditable(True)
+        for key, title in MODELS:
+            self.model.addItem(title, key)
+        self.model.setToolTip("Можно вписать точное имя модели, например claude-opus-5-5")
         f.addRow("Модель", self.model)
+        self.effort = QComboBox()
+        for key, title in EFFORTS:
+            self.effort.addItem(title, key)
+        f.addRow("Сколько думать", self.effort)
+        self.lean = QCheckBox("Быстрый режим: без MCP-серверов и навыков, только нужные инструменты")
+        f.addRow(self.lean)
+        f.addRow(_label("Opus тратит лимит подписки быстрее других моделей. Низкий уровень размышлений и быстрый "
+                        "режим заметно ускоряют ответы и экономят лимит. Если Opus перегружен, ответит Sonnet."))
         self.use_subscription = QCheckBox("Использовать подписку Claude Pro (игнорировать ANTHROPIC_API_KEY)")
         f.addRow(self.use_subscription)
         f.addRow(_label("Если отключить, а в системе задан ANTHROPIC_API_KEY, Claude Code будет списывать деньги "
@@ -177,6 +215,8 @@ class SettingsPage(QWidget):
         f.addRow(self.tts)
         self.speak_typed = QCheckBox("Озвучивать и ответы на текстовые команды")
         f.addRow(self.speak_typed)
+        self.jarvis = QCheckBox("Эффект JARVIS: голос ниже и с лёгким эхом (для нейроголосов)")
+        f.addRow(self.jarvis)
         self.voice_name = QComboBox()
         self.voice_name.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         f.addRow("Голос", self.voice_name)
@@ -253,6 +293,7 @@ class SettingsPage(QWidget):
 
         self.c.claude_status.connect(self._on_claude_status)
         self.c.voices_changed.connect(self.on_voices_downloaded)
+        self.c.config_applied.connect(self.load)
         self.load()
 
     # ---- load / save
@@ -264,7 +305,13 @@ class SettingsPage(QWidget):
         self.start_minimized.setChecked(cfg.system.start_minimized)
         b = cfg.brain
         self.claude_path.setText(b.claude_path)
-        self.model.setText(b.model)
+        index = self.model.findData(b.model)
+        if index < 0:
+            self.model.addItem(b.model, b.model)
+            index = self.model.count() - 1
+        self.model.setCurrentIndex(index)
+        self.effort.setCurrentIndex(max(0, self.effort.findData(b.effort)))
+        self.lean.setChecked(b.lean_mode)
         self.use_subscription.setChecked(b.use_subscription)
         self.autonomy.setCurrentIndex(max(0, self.autonomy.findData(b.autonomy)))
         self.autonomy_hint.setText(AUTONOMY[self.autonomy.currentIndex()][2])
@@ -290,6 +337,7 @@ class SettingsPage(QWidget):
         self.clap_threshold.setValue(int(v.clap_threshold * 100))
         self.tts.setChecked(v.tts_enabled)
         self.speak_typed.setChecked(v.speak_typed_replies)
+        self.jarvis.setChecked(v.jarvis_effect)
         self._fill_voices(v.tts_voice)
         self.rate.setValue(v.tts_rate)
         self.volume.setValue(v.tts_volume)
@@ -303,6 +351,13 @@ class SettingsPage(QWidget):
         self.search_roots.set_values(s.search_roots)
         self.apps.setPlainText("\n".join(f"{k} = {val}" for k, val in cfg.apps.items()))
         self.sites.setPlainText("\n".join(f"{k} = {val}" for k, val in cfg.sites.items()))
+
+    def _model_value(self) -> str:
+        text = self.model.currentText().strip()
+        for key, title in MODELS:
+            if text == title:
+                return key
+        return text
 
     @staticmethod
     def _pairs(text: str) -> dict[str, str]:
@@ -319,7 +374,9 @@ class SettingsPage(QWidget):
         data["user_name"] = self.user_name.text().strip()
         data["brain"].update(
             claude_path=self.claude_path.text().strip(),
-            model=self.model.text().strip(),
+            model=self._model_value(),
+            effort=self.effort.currentData(),
+            lean_mode=self.lean.isChecked(),
             use_subscription=self.use_subscription.isChecked(),
             autonomy=self.autonomy.currentData(),
             workspaces=self.workspaces.values(),
@@ -339,6 +396,7 @@ class SettingsPage(QWidget):
             clap_threshold=self.clap_threshold.value() / 100,
             tts_enabled=self.tts.isChecked(),
             speak_typed_replies=self.speak_typed.isChecked(),
+            jarvis_effect=self.jarvis.isChecked(),
             tts_voice=self.voice_name.currentData() or "",
             tts_rate=self.rate.value(),
             tts_volume=self.volume.value(),
@@ -366,7 +424,10 @@ class SettingsPage(QWidget):
             lines = [f"• {'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()]
             QMessageBox.warning(self, "Неверные настройки", "Исправьте:\n" + "\n".join(lines))
             return
-        if config.brain.autonomy == "advanced" and self.c.config.brain.autonomy != "advanced":
+        if config.brain.autonomy == "full" and self.c.config.brain.autonomy != "full":
+            if not confirm_full_access(self):
+                return
+        elif config.brain.autonomy == "advanced" and self.c.config.brain.autonomy != "advanced":
             answer = QMessageBox.question(
                 self, "Расширенная автономия",
                 "В этом режиме Claude сможет без вопросов запускать python- и node-скрипты в рабочих папках. "
@@ -393,6 +454,8 @@ class SettingsPage(QWidget):
     def _preview_voice(self) -> None:
         self.c.speaker.stop()
         self.c.speaker.configure(self.voice_name.currentData() or "", self.rate.value(), self.volume.value())
+        if hasattr(self.c.speaker, "set_effect"):
+            self.c.speaker.set_effect(self.jarvis.isChecked())
         self.c.speaker.speak("Привет! Я Клод, ваш голосовой ассистент. Чем могу помочь?")
 
     def _download_voices(self) -> None:

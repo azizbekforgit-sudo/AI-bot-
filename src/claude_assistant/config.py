@@ -21,7 +21,9 @@ from claude_assistant import paths
 
 log = logging.getLogger(__name__)
 
-Autonomy = Literal["assisted", "balanced", "advanced"]
+Autonomy = Literal["assisted", "balanced", "advanced", "full"]
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+CONFIG_VERSION = 2
 
 _HOTKEY_RE = re.compile(
     r"^((ctrl|alt|shift|win)\+)+([a-z0-9]|f([1-9]|1[0-2])|space|enter|tab|esc|backspace|pause)$"
@@ -76,7 +78,11 @@ class _Section(BaseModel):
 
 class BrainConfig(_Section):
     claude_path: str = ""
-    model: str = ""
+    model: str = "opus"
+    # How long the model thinks before answering. "low" = fastest replies and fewest tokens.
+    effort: Effort = "low"
+    # Lean mode: no MCP servers/skills, only the tools the assistant needs → faster, cheaper.
+    lean_mode: bool = True
     autonomy: Autonomy = "balanced"
     workspaces: list[str] = Field(default_factory=list)
     max_tool_calls: int = Field(40, ge=1, le=200)
@@ -130,6 +136,7 @@ class VoiceConfig(_Section):
     clap_threshold: float = Field(0.35, ge=0.05, le=1.0)
     tts_enabled: bool = True
     speak_typed_replies: bool = False
+    jarvis_effect: bool = True
     tts_voice: str = ""
     tts_rate: int = Field(1, ge=-10, le=10)
     tts_volume: int = Field(90, ge=0, le=100)
@@ -169,6 +176,7 @@ class SystemConfig(_Section):
 
 
 class AppConfig(_Section):
+    version: int = CONFIG_VERSION
     user_name: str = Field("", max_length=60)
     brain: BrainConfig = Field(default_factory=BrainConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
@@ -220,9 +228,13 @@ def load_config(path: Path | None = None) -> LoadResult:
         return LoadResult(config=config, warnings=warnings)
 
     try:
-        return LoadResult(config=AppConfig.model_validate(raw))
+        config = AppConfig.model_validate(raw)
     except ValidationError:
         pass
+    else:
+        if _migrate(raw, config):
+            save_config(config, path)
+        return LoadResult(config=config)
 
     # Section-by-section recovery.
     backup = _backup(path)
@@ -251,6 +263,18 @@ def load_config(path: Path | None = None) -> LoadResult:
     warnings.append(f"Исходный файл сохранён как {backup.name}.")
     save_config(config, path)
     return LoadResult(config=config, warnings=warnings)
+
+
+def _migrate(raw: dict, config: AppConfig) -> bool:
+    """Upgrade settings written by older versions. Returns True when something changed."""
+    version = raw.get("version", 1) if isinstance(raw.get("version", 1), int) else 1
+    if version >= CONFIG_VERSION:
+        return False
+    brain = raw.get("brain") if isinstance(raw.get("brain"), dict) else {}
+    if not brain.get("model"):
+        config.brain.model = "opus"  # v2: Opus with low effort is the default brain
+    config.version = CONFIG_VERSION
+    return True
 
 
 def save_config(config: AppConfig, path: Path | None = None) -> None:

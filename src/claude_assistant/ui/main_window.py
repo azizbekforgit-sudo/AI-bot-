@@ -157,4 +157,5 @@ class MainWindow(QMainWindow):
         if config.system.theme != old.system.theme:
             self.c.message.emit("system", "Тема применится после перезапуска ассистента.")
         self.c.message.emit("system", "Настройки сохранены.")
+        self.assistant.sync_full_access()
         self.settings.load()
