@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-desktop-assistant"
+version = "0.1.0"
+description = "Голосовой ассистент для Windows: кодовое слово, локальная речь, мозг — Claude Code по подписке."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PySide6>=6.6,<7",
+    "pydantic>=2.6,<3",
+    "psutil>=5.9,<8",
+    "numpy>=1.26,<3",
+    "sounddevice>=0.4.6,<0.6",
+    "vosk>=0.3.45,<0.4",
+    "nvidia-ml-py>=12.535",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+voices = ["piper-tts>=1.3,<2"]
+dev = ["pytest>=8,<10", "pyinstaller>=6.3,<7"]
+
+[project.scripts]
+claude-assistant = "claude_assistant.app:main"
+
+[project.gui-scripts]
+claude-assistant-gui = "claude_assistant.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
